@@ -1,630 +1,696 @@
-# 雙 AI 工程協作標準協定
+# Two-Agent Relay Collaboration Protocol
 
-> 版本 2.0.2｜工具中立｜Repository-first｜極簡完成訊號
+> Version 3.1.0 | Local Relay | Git-backed engineering | Silent handoff
 
-## 0. 協定邊界
+## 0. Adoption and compatibility
 
-本協定適用於一位 Owner、工程師端 AI（Engineer）與審核端 AI（Reviewer）。
-它的目的，是讓不同電腦、不同 LLM、沒有共同聊天記憶的兩端，仍能透過專案中的
-報告安全交接。
+This protocol is a reusable baseline for one Owner, one Engineer agent, and one Checker agent
+working on the same local Git worktree. A project adopts it only after the Owner completes the
+project profile, Relay configuration, and activation checks.
 
-程式只負責發布完成 JSON。以下工作一律不交給程式：
+Relay v3 replaces report files, completion-signal JSON, polling watchers, and background detector
+processes. A project migrating from an older workflow may retain those artifacts as read-only audit
+history, but they are not part of this standard and must not be used for new handoffs after cutover.
 
-- 讀取或解釋對方的完成 JSON。
-- 自動判斷下一位工作者。
-- 自動授權下一輪。
-- 自動判定 PASS、FIX_REQUIRED 或 HOLD。
-- 自動 commit、push、merge、部署或刪除。
-- 常駐監看目錄或自動啟動另一個 LLM。
+### 0.1 Baseline invariants and project policy
 
-兩端 AI 直接閱讀 JSON 與報告，按本協定行動。
+An unmodified Relay workflow keeps one active role, claimed event delivery, review of the exact Git
+head, Checker-controlled findings and acceptance, terminal `accept`, and explicit Owner authority.
+These are operational invariants, not project preferences.
 
-## 1. 專案開始前設定
+The project profile may adapt the planning backend, ID convention, round size, Gate use and scope,
+verification commands, path ownership, permissions, and Owner-facing report format. The Markdown
+work plan and phase-Gate workflow are supported defaults. A project that changes Relay's state
+machine, Git-boundary rules, or delivery guarantees must version and test that variant separately.
 
-Owner 在每個新專案填妥以下內容，不得把空白項目交給 AI 猜測：
+## 1. Purpose and limits
 
-| 項目 | 專案設定 |
-|---|---|
-| 專案名稱 | `{{PROJECT_NAME}}` |
-| 一句話目標 | `{{OBJECTIVE}}` |
-| 明確非目標 | `{{NON_GOALS}}` |
-| 完成條件 | `{{DONE_CRITERIA}}` |
-| 規格優先順序 | `{{SOURCE_OF_TRUTH}}` |
-| Engineer 負責範圍 | `{{ENGINEER_SCOPE}}` |
-| Reviewer 負責範圍 | `{{REVIEWER_SCOPE}}` |
-| 每輪大小或時間上限 | `{{ROUND_LIMIT}}` |
-| 必跑驗證 | `{{QUALITY_COMMANDS}}` |
-| 允許修改的路徑 | `{{ALLOWED_PATHS}}` |
-| 排除的路徑 | `{{OUT_OF_SCOPE_PATHS}}` |
-| commit 權限 | `{{COMMIT_POLICY}}` |
-| push 權限 | 預設 Owner |
-| main merge 權限 | 預設 Owner |
-| 外部服務與成本權限 | `{{EXTERNAL_POLICY}}` |
-| Owner 決策管道 | `{{OWNER_CHANNEL}}` |
-| 暫停或取消條件 | `{{STOP_CONDITIONS}}` |
+Relay coordinates one Engineer and one Checker running in separate tmux panes. It provides a small,
+strict state machine and reliable short handoffs without depending on a model vendor or AI API.
 
-需要改變這些設定時，由 Owner 決定並更新正式文件。聊天中的推測不是授權。
+Relay does:
 
-## 2. 角色與權限
+- record the active work round and Checkpoint;
+- enforce turn ownership;
+- verify mechanical Git boundaries;
+- store concise review findings and revision commits;
+- send fixed events through an Owner-selected local transport;
+- stop for an owner decision when existing authority is insufficient.
 
-### 2.1 Owner
+Relay does not:
 
-Owner 決定需求、優先順序、重大架構、公開契約、成本、外部操作、刪除、
-push、main merge、專案暫停與取消。
+- interpret requirements or decide whether code is correct;
+- select work without the Checker's judgment;
+- run tests automatically;
+- modify product code;
+- commit, push, merge, deploy, delete, or rewrite Git history;
+- grant authority that the owner did not provide;
+- run a watcher, polling loop, daemon, network service, or background agent.
 
-### 2.2 Engineer
+## 2. Sources of truth
 
-Engineer 只執行最新 Reviewer 報告明確指定的一輪工作。它負責：
+The sources of truth have separate responsibilities:
 
-- 先列本輪計畫與可勾選清單。
-- 在授權範圍內實作。
-- 執行驗證並保留實際結果。
-- 寫完整工作報告。
-- 把發布程式當作本輪最後一個動作。
+```text
+requirements documents   required behavior and constraints
+design documents         implementation contracts and boundaries
+project work plan         planned rounds and acceptance details
+Git                       product changes and commit history
+Relay Checkpoints         local turn, review, and revision history
+Owner decisions           scope and exceptional authorization
+```
 
-Engineer 不得自行展開下一輪、改 Reviewer 報告、猜 Owner 意圖，或在發布完成
-JSON 後繼續修改。
+The project profile must list the exact documents in priority order. A Checkpoint may narrow one
+round but cannot override a higher-priority source.
 
-### 2.3 Reviewer
+Work-round IDs are opaque project-defined strings. Relay accepts existing IDs such as
+`EXAMPLE-R130A3B2B1C2` and does not renumber or parse the project work plan.
 
-Reviewer 負責獨立檢查與引導，不替 Engineer 偷做產品實作。它負責：
+## 3. Local files
 
-- 先確認交接 JSON 有效，再完整閱讀工作報告。
-- 檢查範圍、實作、測試、錯誤路徑、風險與 Git 邊界。
-- 清楚寫出問題的證據、影響、原因、修改指南與驗收方式。
-- 只安排一個可獨立驗證的下一輪。
-- 寫完整審核報告。
-- 把發布程式當作審核最後一個動作。
-
-Reviewer 不得為了讓結果通過而直接修改產品程式，也不得在待 Owner 決定時發布
-完成 JSON。
-
-## 3. 唯一交接來源
-
-聊天內容只協助理解，不是正式交接。兩端共同依賴以下檔案：
+The recommended project integration is:
 
 ```text
 docs/ai-collaboration/
-├─ PROTOCOL.md
-├─ reports/
-│  ├─ engineer/
-│  └─ reviewer/
-└─ signals/
+├── PROTOCOL.md
+├── PROJECT_PROFILE.md
+├── relay.toml
+└── tools/
+    ├── relay.py
+    └── ...
 
-tools/ai-collaboration/
-├─ publish_engineer_complete.py
-└─ publish_reviewer_complete.py
+.relay/
+├── state.json
+├── transition.json        # exists only while a multi-file transition is pending
+└── checkpoints/
+    ├── CP001.json
+    └── CP002.json
 ```
 
-每一輪建立新的報告與新的 JSON，不覆寫舊檔。
+The project decides whether the protocol, profile, and tool source are tracked. `.relay/` is always
+local operational state and must be ignored by Git. The real `relay.toml` and the active Markdown
+work plan are also local files because Relay's Git guards require an unchanged worktree at every
+handoff. Commit only sanitized configuration and work-plan templates.
 
-建議命名：
+The Owner writes `relay.toml`; Relay never creates or edits it. Every agent has a tmux target for
+role identity and an explicit delivery transport. Codex uses its session-aware queue because
+programmatically pasting text followed immediately by Enter is not a reliable Codex submission.
+The Owner obtains tmux targets with `tmux list-panes`. For Codex, the Owner also supplies the
+session UUID or exact session name accepted by the installed `codex queue` command:
+
+```toml
+schema_version = "relay-config/v2"
+branch = "work"
+
+[agents.engineer]
+target = "project:0.1"
+transport = "tmux_keys"
+
+[agents.checker]
+target = "project:0.0"
+transport = "codex_queue"
+thread = "<codex-session-uuid-or-name>"
+```
+
+Blank, equal, or unresolvable targets, an unknown transport, or a missing Codex thread fail
+initialization. Relay does not guess terminal names, client types, or session identities. Agents
+never edit Relay state or Checkpoint JSON directly; the Relay CLI owns those files.
+
+`codex_queue` is optional. Before selecting it, the Owner must confirm that the installed Codex CLI
+exposes `codex queue --help`; otherwise use `tmux_keys` with a compatible recipient.
+
+## 4. Project authority
+
+### 4.1 Owner
+
+The Owner decides requirements, priority, public contracts, architecture, technology choices,
+costs, credentials, external services, destructive actions, push, main merge, deployment, pause,
+cancel, and exceptional recovery.
+
+Project-specific permissions belong in `PROJECT_PROFILE.md`. Silence never grants commit, push,
+merge, deployment, destructive-action, external-service, or spending authority.
+
+### 4.2 Engineer
+
+The Engineer:
+
+- implements only the assigned work round;
+- stays inside its allowed paths and acceptance conditions;
+- self-tests and fixes obvious failures;
+- commits completed work when the project rules permit it;
+- hands the committed head to the Checker with `relay review`;
+- stops after the handoff.
+
+The Engineer does not select a next round, modify Checkpoints directly, push, merge, deploy, delete,
+or guess an owner decision.
+
+### 4.3 Checker
+
+The Checker:
+
+- independently inspects the actual diff and relevant source;
+- runs tests appropriate to the risk;
+- records concise, actionable findings;
+- accepts only a head it actually reviewed;
+- selects one executable next round;
+- reports progress to the Owner when asked;
+- asks the Owner whenever existing rules do not determine a safe answer.
+
+The Checker does not change product code to make a review pass.
+
+## 5. Project profile and boundaries
+
+Before activation, the Owner copies `PROJECT_PROFILE_TEMPLATE.md` to
+`docs/ai-collaboration/PROJECT_PROFILE.md` and replaces every placeholder. The profile defines:
+
+- project objective, non-goals, and completion criteria;
+- source-of-truth order and work-plan path;
+- Engineer and Checker responsibilities;
+- allowed, shared, protected, and excluded paths;
+- maximum round size;
+- required validation commands;
+- commit, push, merge, deployment, and external-service authority;
+- Owner decision channel and stop conditions.
+
+Each round contains one independently verifiable objective within the configured size limit. A
+second objective, unrelated subsystem, or repeated review churn means the Checker splits the work
+before assignment.
+
+Required verification is project-defined. An unavailable command is reported honestly; it is never
+claimed as executed. Neither agent expands permissions because a path or command is absent from the
+profile; uncertainty enters an Owner hold.
+
+### 5.1 Work-plan contract
+
+The standard planning backend is one local, Git-ignored Markdown work plan created from
+`WORK_PLAN_TEMPLATE.md`. Both agents share it through the common filesystem. Each engineering
+checklist item contains:
+
+- one unique opaque work-round ID;
+- one independently verifiable objective;
+- an observable acceptance condition;
+- explicit dependencies or `none`;
+- enough scope information to prevent unrelated work from entering the round.
+
+The Owner approves the initial scope and material scope changes. Within that approved scope, the
+Checker may split oversized work, add focused repair rounds from findings, reorder ready rounds, and
+select the next executable round. Only the Checker changes a work item from `[ ]` to `[x]`, after its
+committed implementation passes review and before the terminal `accept` transition. The Engineer
+never marks its own round complete in the work plan.
+
+A blocked or deferred item remains unchecked and records its exact dependency. Explanatory prose
+does not waive it. When the project uses phase Gates, each configured phase ends with a Checker-owned
+Gate item whose ID contains the delimited `GATE` token required by the built-in scanner.
+
+### 5.2 Alternative planning systems
+
+Relay state transitions require only an opaque work-round ID, so a project may use GitHub Issues,
+Jira, or another planning system. The project profile must name that system and define equivalent
+rules for unique IDs, objective size, acceptance criteria, dependencies, status ownership, and any
+configured phase Gates.
+
+The built-in `scan-work` and `scan-all-work` commands read Markdown checklists only. A project using
+another planning system and the phase-Gate preflight must either maintain a local, Git-ignored
+generated Markdown mirror or provide a reviewed replacement scan command with the same blocking
+behavior. Without one of those two mechanisms, it cannot claim compatibility with this preflight.
+
+## 6. Turn model
+
+Only one role owns the turn:
 
 ```text
-ENG-0001_R01-topic.md
-REV-0001_R01-topic.md
-ENG-0001_R01-topic.engineer.complete.json
-REV-0001_R01-topic.reviewer.complete.json
+engineering -> review -> revise -> review -> accepted
 ```
 
-草稿可以使用 `.draft.md`；準備發布前先改成正式 `.md` 名稱。發布程式拒絕
-`.draft.md`。
+Additional states:
 
-## 4. 一輪一停
+- `owner_hold`: no agent may continue until the Owner decides and explicitly authorizes resume.
+- `idle`: the previous Checkpoint is accepted and no next round is assigned.
+- `cancelled`: an explicitly cancelled untouched assignment; records are retained.
+- `deferred`: reviewed partial work is retained, but its open finding and unchecked plan item remain
+  blocking obligations until the dependency becomes available.
 
-同一時間只有一端可以工作：
+The Checker may reorder ready work before assigning it. Once a round starts, neither agent silently
+parks it and changes the same branch with another round. An unexpected dependency or decision enters
+`owner_hold`; only an explicit Owner-approved `defer` transition may then retain reviewed partial work
+and assign a different ready round.
 
-```text
-Reviewer 報告指定一輪
-  → Reviewer 發布完成 JSON 並等待
-  → Engineer 驗證 JSON、閱讀報告、完成一輪
-  → Engineer 發布完成 JSON 並等待
-  → Reviewer 驗證 JSON、閱讀報告、完成檢查
-  → 產生下一份 Reviewer 報告或等待 Owner
+## 7. Checkpoint lifecycle
+
+The Checker creates a Checkpoint when assigning the round:
+
+```bash
+relay start --round EXAMPLE-R130A3B2B1C2
 ```
 
-一輪只包含一個能獨立驗證的目標。即使 Engineer 提早完成，也不能順便做下一輪。
-即使 Reviewer 已經看出後續方向，也只能把它寫進下一輪指南，不能讓兩端同時工作。
-
-第一輪由 Reviewer 建立 bootstrap 審核報告，列出第一個短輪次，再發布 Reviewer
-完成 JSON。
-
-## 5. Owner 決策停工
-
-遇到以下事項時必須停下來：
-
-- 需求或驗收條件有多種合理解釋。
-- 需要更改公開介面、資料模型、架構或技術棧。
-- 需要新增外部服務、成本、帳號、權限或敏感資料。
-- 需要刪除、push、merge main、部署或改動他人範圍。
-- 規格、報告與現況互相衝突。
-- 選項會明顯影響時程、品質或專題方向。
-
-停工說明必須包含：
-
-1. 原本在做什麼、做到哪裡。
-2. 發現了什麼證據。
-3. 為什麼不能依現有授權決定。
-4. 可行選項及各自影響。
-5. Reviewer 的建議與理由。
-6. Owner 需要回答的精確問題。
-7. Owner 決定後如何恢復。
-
-有待決事項時保留草稿，不呼叫發布程式。Owner 回覆後，必須等 Owner 明確說
-「可以繼續」，才完成同一輪剩餘工作。
-
-## 6. 報告規則
-
-- 報告是兩端唯一完整對話管道，不能只寫結果。
-- 所有修改指南都必須落在 Reviewer 報告。
-- 所有實際變更與驗證證據都必須落在 Engineer 報告。
-- 正式報告發布後不得修改、覆寫、改名或刪除。
-- 報告有錯時，新建 correction report，說明取代哪一份，不改原檔。
-- 每份報告最後只能給出一個下一步：另一端工作、等待 Owner，或專案停止。
-- 不得在報告未完成時預先呼叫發布程式。
-- Engineer 的「本輪規劃步驟」必須在修改產品檔案前寫定；開始執行後不得回頭
-  修改，實際差異只能記入「問題、偏差與風險」。
-- Engineer 必須把 Reviewer 指定的 checklist 原樣複製到工作報告；未完成項目
-  保留 `[ ]` 並說明原因，不得刪除。
-
-## 7. Engineer 工作報告範本
-
-Engineer 每輪直接複製以下內容建立新的工作報告。第零節必須在修改任何產品檔案
-前完成；開始執行後不得重寫，實際差異只能記入第五節。
-
-```markdown
-# Engineer Work Report｜{{ROUND_ID}} {{TOPIC}}
-
-| 項目 | 內容 |
-|---|---|
-| 日期 | `{{DATE}}` |
-| 輪次 | `{{ROUND_ID}}` |
-| 狀態 | `COMPLETE` / `INCOMPLETE` / `BLOCKED` |
-| 實際耗時 | `{{ELAPSED_TIME}}` |
-| Branch | `{{BRANCH}}` |
-| Base commit | `{{BASE_COMMIT}}` |
-| Head commit | `{{HEAD_COMMIT_OR_UNCOMMITTED}}` |
-| 對應 Reviewer 報告 | `{{REVIEW_REPORT_PATH_AND_SECTION}}` |
-| 輪次上限 | `{{ROUND_LIMIT}}` |
-
----
-
-## 〇、本輪規劃步驟
-
-> 本節必須在修改任何產品檔案前寫定。
->
-> 開始執行後，本節即凍結，不得因實際做法不同而回頭修改。所有差異一律如實記入
-> 「五、問題、偏差與風險」。
-
-| 規劃紀錄 | 內容 |
-|---|---|
-| 規劃完成時間 | `{{PLANNING_COMPLETED_AT}}` |
-| 規劃時 HEAD | `{{PLANNING_HEAD}}` |
-| 授權來源 | `{{REVIEW_REPORT_PATH_AND_SECTION}}` |
-
-### 0.1 唯一目標與允許範圍
-
-**唯一目標：** {{ONE_VERIFIABLE_OBJECTIVE}}
-
-**允許新增／修改：**
-
-- `{{ALLOWED_PATH}}`
-
-**完成條件：**
-
-- {{OBJECTIVE_DONE_CRITERION}}
-
-### 0.2 執行步驟表
-
-> 每一列都是可獨立驗證的最小動作。禁止只寫「實作某模組」、「補測試」或
-> 「更新文件」。若無法用一句話說明怎麼知道做完，必須再拆小。
-
-| # | 動作 | 產出檔案 | 完成判準 | 驗證方式 | 依賴 | 預估 |
-|---:|---|---|---|---|---|---:|
-| 1 | {{CONCRETE_ACTION}} | `{{PATH}}`（新增／修改） | {{OBJECTIVE_CRITERION}} | `{{COMMAND_OR_CHECK}}` | — | {{TIME}} |
-| 2 | {{CONCRETE_ACTION}} | `{{PATH}}`（新增／修改） | {{OBJECTIVE_CRITERION}} | `{{COMMAND_OR_CHECK}}` | 1 | {{TIME}} |
-
-**預估合計：** {{TOTAL_ESTIMATE}}
-
-### 0.3 決策點
-
-> 尚未核准的決策出現時立即停止，不自行套用預設，也不先做其他部分。
-
-| 編號 | 事項 | 必須在何步前決定 | 現有授權或待問問題 | 未解時動作 |
-|---|---|---:|---|---|
-| P-1 | {{DECISION_POINT_OR_NONE}} | {{STEP}} | {{AUTHORITY_OR_QUESTION}} | {{STOP_ACTION}} |
-
-### 0.4 風險步驟與退路
-
-| 編號 | 風險 | 影響步驟 | 預防／偵測方式 | 失敗時退路或停止條件 |
-|---|---|---:|---|---|
-| R-1 | {{RISK}} | {{STEP}} | {{PREVENTION_OR_PROBE}} | {{FALLBACK_OR_STOP}} |
-
-### 0.5 本輪明確不做
-
-- 不修改 `{{PROTECTED_PATH}}`。
-- 不開始 `{{NEXT_ROUND_OR_FEATURE}}`。
-- 不執行未授權的 commit、push、merge、部署、刪除或外部寫入。
-- {{OTHER_EXPLICIT_NON_GOAL}}
-
----
-
-## 一、Reviewer Checklist
-
-> 將來源 Reviewer 報告的當輪 checklist **原樣複製**到下方。執行中只更新
-> `[ ]`／`[x]`；不得改寫、重排或刪除項目。未完成項保留 `[ ]` 並說明原因。
-
-- [ ] 1. {{COPY_FROM_REVIEW_REPORT_VERBATIM}}
-- [ ] 2. {{COPY_FROM_REVIEW_REPORT_VERBATIM}}
-
-**完成統計：** {{COMPLETED_COUNT}} / {{TOTAL_COUNT}}
-
----
-
-## 二、本輪變更
-
-### 2.1 本輪新增
-
-| 檔案／symbol | 目的與實際內容 |
-|---|---|
-| `{{PATH_OR_SYMBOL}}` | {{CHANGE_AND_REASON}} |
-
-### 2.2 本輪修改
-
-| 檔案／symbol | 修改前 | 修改後 | 原因 |
-|---|---|---|---|
-| `{{PATH_OR_SYMBOL}}` | {{BEFORE}} | {{AFTER}} | {{REASON}} |
-
-### 2.3 本輪刪除
-
-沒有則明寫「無」。有則列出 Owner／Reviewer 授權來源與可恢復性。
-
-### 2.4 本輪開始前已存在
-
-列出進入本輪前就存在的未提交變更或檔案，避免把他人或前輪成果算成本輪交付。
-
-### 2.5 他人同時修改
-
-沒有則明寫「無」。有則列出路徑、發現時間、影響與停止／協調方式。
-
-### 2.6 未觸碰與受保護項目
-
-列出 Reviewer 指定不得改動的路徑，並說明如何確認沒有漂移。
-
----
-
-## 三、驗證證據
-
-每項都列出完整命令、exit code、關鍵輸出與判讀。未執行時明寫「未驗證」及原因。
-搜尋無結果時，要區分「無符合項」與「命令執行失敗」。
-
-### 3.1 必跑驗證
-
-```console
-$ {{COMMAND}}
-{{KEY_OUTPUT}}
-exit={{EXIT_CODE}}
-```
-
-**判讀：** {{INTERPRETATION}}
-
-### 3.2 正向、負向與回歸案例
-
-| 案例 | 期望 | 實際 | 結果 |
-|---|---|---|---|
-| {{CASE}} | {{EXPECTED}} | {{ACTUAL}} | PASS／FAIL／未驗證 |
-
----
-
-## 四、Git 證據
-
-```console
-$ git branch --show-current
-{{BRANCH}}
-
-$ git rev-parse HEAD
-{{HEAD}}
-
-$ git status --short
-{{STATUS_OUTPUT_OR_EMPTY}}
-
-$ git diff --stat
-{{DIFF_STAT}}
-```
-
-| 項目 | 狀態 |
-|---|---|
-| Index／staged | {{STATE}} |
-| Commit | {{NOT_CREATED_OR_SHA_AND_AUTHORITY}} |
-| Push | {{NOT_PERFORMED_OR_AUTHORITY}} |
-| Main merge | {{NOT_PERFORMED_OR_AUTHORITY}} |
-
----
-
-## 五、問題、偏差與風險
-
-### 5.1 規劃與實際差異
-
-| 規劃步驟 | 原計畫 | 實際 | 原因 | 影響 |
-|---:|---|---|---|---|
-| {{STEP}} | {{PLAN}} | {{ACTUAL}} | {{REASON}} | {{IMPACT}} |
-
-沒有差異也要明寫「無」。
-
-### 5.2 失敗嘗試與未完成
-
-列出失敗命令、未完成 checklist、未驗證項目及原因，不得隱藏。
-
-### 5.3 範圍外變更
-
-沒有則明寫「無」。若存在，列出路徑、原因、授權狀態與處置。
-
-### 5.4 工時偏差與已知限制
-
-比較各步驟預估與實際；說明殘留限制及對下一輪的影響。
-
----
-
-## 六、待決事項
-
-沒有則明寫「無」。
-
-若需要 Owner 決定，必須交代原工作、進度、證據、不能自行決定的原因、選項與影響、
-建議、精確問題及恢復方式；保留草稿並停止，不呼叫完成發布程式。
-
----
-
-## 七、給 Reviewer 的重現步驟
-
-從 repository 當前狀態開始逐條列出，讓 Reviewer 不需詢問即可重現：
-
-1. {{REPRODUCTION_STEP}}
-2. {{REPRODUCTION_STEP}}
-
----
-
-## 八、停止聲明
-
-- 本輪狀態：{{COMPLETE_OR_INCOMPLETE_OR_BLOCKED}}
-- Reviewer checklist：{{COMPLETED_COUNT}} / {{TOTAL_COUNT}}
-- 下一輪：**尚未開始**
-- 未授權的 commit／push／merge／部署／刪除：**未執行**
-- 本報告發布後不再修改；若需更正，新增 correction report，不覆寫本檔。
-- 發布程式成功後立即等待 Reviewer。
-```
-
-規劃不是成果展示。若實際執行順序、方法或工時與原計畫不同，不得回頭修飾第零節，
-必須如實寫入第五節。
-
-## 8. Reviewer 審核報告範本
-
-```markdown
-# Review Report｜R01 主題
-
-| 項目 | 內容 |
-|---|---|
-| 檢查時間 | ... |
-| 對應 Engineer 報告 | ... |
-| 檢查基線 | branch、base、head |
-| 結論 | PASS／FIX_REQUIRED／HOLD |
-| 下一個允許輪次 | 輪次 ID 或「無」 |
-
-## 1. 結論先行
-
-先說明 outcome、原因，以及下一端目前能不能開始。
-
-## 2. 檢查範圍、輸入與 baseline
-
-列出已檢查、未檢查、報告雜湊、實際檔案、branch、base/head 與工作樹狀態。
-
-## 3. Findings
-
-每個問題包含編號、嚴重度、證據、影響、根因、修改指南與驗收方式。
-
-## 4. Reviewer 獨立驗證
-
-列出實際命令、exit code、額外案例與結果。
-
-## 5. 下一輪精確 Scope
-
-列出唯一目標、允許新增／修改、必須保持不變及明確禁止。
-
-## 6. 修改指南與 PASS 條件
-
-依正確順序提供具體方法、負向案例、驗收命令與停止條件。
-
-## 7. 待 Owner 決定事項
-
-交代完整前因後果、選項、影響與建議；仍待決時停止且不發布 JSON。
-
-## 8. Engineer 當輪 Checklist
-
-- [ ] 1. 前置基線與來源報告確認。
-- [ ] 2. 建立新工作報告，先寫完整第零節規劃再動產品檔案。
-- [ ] 3. 一個可獨立驗收的實作或修正步驟。
-- [ ] 4. 必要的正向、負向與回歸驗證。
-- [ ] 5. 最終 scope、Git 與報告完整性核對。
-- [ ] 6. 呼叫發布程式並立即等待。
-
-## 9. 工作報告必填與停止條件
-
-說明 Engineer 報告必須提供的特殊證據，以及遇到哪些情況必須停止。
-
-## 10. 下一個唯一動作
-
-明確寫 Engineer 可以開始哪一輪、應等待 Owner，或專案停止。
-```
-
-Reviewer 的 checklist 是 Engineer 的授權邊界，不是 Engineer 的執行計畫替代品。
-Engineer 必須先原樣複製 checklist，再依依賴關係拆成第零節的七欄步驟表。
-
-checklist 必須有順序、能勾選且能驗收；不能只列抽象結果。報告寫不清楚本身就是
-finding，Reviewer 應要求 Engineer 修正溝通品質，避免同一錯誤反覆發生。
-
-## 9. 發布完成 JSON
-
-來源端只有在以下條件全部成立時才能呼叫發布程式：
-
-- 報告內容已完全寫完並重新讀過。
-- 沒有待 Owner 決定事項。
-- 報告已使用正式 `.md` 名稱。
-- 本輪不會再修改任何檔案。
-- 即將進入等待。
-
-工程師端最後呼叫：
-
-```text
-python3 tools/ai-collaboration/publish_engineer_complete.py \
-  --project-root . \
-  --report docs/ai-collaboration/reports/engineer/<REPORT>.md
-```
-
-審核端最後呼叫：
-
-```text
-python3 tools/ai-collaboration/publish_reviewer_complete.py \
-  --project-root . \
-  --report docs/ai-collaboration/reports/reviewer/<REPORT>.md
-```
-
-發布程式執行順序固定：
-
-1. 找到自己的報告。
-2. 計算報告 SHA-256。
-3. 準備完整 JSON。
-4. 將報告設為唯讀並再次確認內容未變。
-5. 最後才讓正式 `*.complete.json` 路徑出現。
-
-來源端不得手寫、補寫或修改 JSON。exit code 0 後立即等待。
-
-## 10. JSON 格式
+Checkpoint numbering is independent from work-round numbering. One round uses one Checkpoint for
+all review and revision passes.
 
 ```json
 {
-  "schema_version": "ai-collaboration-completion/v1",
-  "source": "reviewer",
-  "report_path": "docs/ai-collaboration/reports/reviewer/REV-0001_R01.md",
-  "report_sha256": "<SHA-256>",
-  "created_at": "2026-08-04T08:30:00Z",
-  "complete": true
+  "id": "CP018",
+  "work_round": "EXAMPLE-R130A3B2B1C2",
+  "base": "72ed191",
+  "head": "72ed191",
+  "status": "engineering",
+  "reviews": [],
+  "revises": [],
+  "holds": []
 }
 ```
 
-欄位只有：
+Rules:
 
-| 欄位 | 用途 |
-|---|---|
-| `schema_version` | 辨識格式版本 |
-| `source` | `engineer` 或 `reviewer` |
-| `report_path` | 從專案根目錄定位正式報告 |
-| `report_sha256` | 發現報告發布後遭修改 |
-| `created_at` | UTC 發布時間 |
-| `complete` | 只有布林值 `true` 才成立 |
+- `base` is the last accepted commit at assignment and remains fixed.
+- `head` is the latest commit handed to the Checker.
+- Review, revision, and hold entries are append-only in meaning.
+- Finding location and problem text remain historical review content. A finding's live `status`
+  is the sole mutable field and only the Checker may change it.
+- Relay may atomically rewrite the JSON file, but never rewrites prior work evidence.
+- The active Checkpoint remains assigned until accepted, held, explicitly cancelled, or explicitly
+  deferred by the Owner.
 
-`complete` 是最後一個欄位。JSON 不放 outcome、next_actor 或 authorized_round；
-這些人類語意只存在報告中，避免程式接管協作判斷。
+## 8. Git guards
 
-## 11. 目的端接手規則
+Git guards are mandatory and run before state-changing handoffs.
 
-目的端可以自行查看 signal 目錄，也可以由人提醒，但不使用本套件以外的自動讀取
-程式。看到 JSON 檔名時仍不能直接開始工作。
+Relay reads the configured branch and agent targets, then records the initial accepted HEAD during
+`relay init`. It rejects:
 
-目的端必須：
+- the wrong repository or branch;
+- detached HEAD;
+- unresolved merges;
+- a dirty worktree, excluding ignored local artifacts;
+- an engineering head with no new commit;
+- a new head that is not a descendant of the previous head;
+- merge commits introduced inside the round or revision;
+- `accept` or `revise` after the reviewed HEAD changes.
 
-1. 直接讀取完整 JSON。
-2. 確認 JSON 可解析。
-3. 確認 `complete` 的型別是 boolean 且值為 `true`；字串 `"true"` 不算。
-4. 確認 `source` 是正在等待的對方角色。
-5. 依 `report_path` 開啟正式報告。
-6. 用作業系統既有工具計算報告 SHA-256，確認與 JSON 相同。
-7. 完整讀取報告與相關實際檔案。
-8. 只依報告的「下一個唯一動作」決定開始、等待或停止。
+These checks protect the handoff boundary. They do not replace scope review or behavioral tests.
+Relay never runs a Git mutation command.
 
-任一步失敗都不能工作。目的端應把異常告訴 Owner，不得自行修 JSON 或報告。
+If an Owner-approved descendant integration advances Git while Relay is idle between accepted
+rounds, the Checker records the new boundary with:
 
-## 12. 報告唯讀的實際界線
-
-發布程式會移除報告寫入權限，避免 LLM 完成後順手繼續修改。相同系統帳號仍可能
-刻意把權限改回，因此這不是對惡意行為的絕對防護。
-
-本協定使用兩層保障：
-
-- 唯讀權限防止意外修改。
-- JSON 中的 SHA-256 讓目的端發現內容曾改變。
-
-任何角色都不得把權限改回來修舊報告。需要更正時新增 correction report，發布
-新的 JSON，並在新報告清楚指向舊報告。
-
-## 13. Git 與外部操作
-
-完成 JSON 只代表「這份報告可以讀」，不代表：
-
-- 可以 commit。
-- 可以 push。
-- 可以 merge main。
-- 可以部署。
-- 可以刪除檔案、branch 或資料。
-- 可以呼叫付費或有副作用的外部服務。
-
-這些權限必須由 Owner 在專案設定或當次決定中逐項授權，不能互相推定。
-
-## 14. 兩端啟動提示詞
-
-### Engineer
-
-```text
-你是 Engineer AI。完整閱讀 PROTOCOL、正式規格、最新有效 Reviewer JSON，
-以及它指向的完整 Reviewer 報告。不能只因檔案存在就開工；必須確認
-complete 是 boolean true、source 正確、report_path 存在且 SHA-256 相同。
-
-只執行報告明確指定的一輪。先把 Reviewer checklist 原樣複製到新工作報告，
-並在任何產品修改前寫完且凍結第零節：唯一目標、七欄執行步驟表、決策點、
-風險與退路、明確不做。開始執行後不得修改第零節，差異只能記入偏差章節。
-之後才可實作與驗證。
-需要 Owner 決定時停止，不發布完成 JSON。全部完成後，發布程式是最後一個動作；
-成功後立即等待，不開始下一輪，也不修改已發布報告。
+```bash
+relay adopt-idle-head --decision <owner-decision>
 ```
 
-### Reviewer
+The command requires `idle`, no pending delivery, the configured branch, a clean worktree, an
+explicit one-line Owner decision, and a current HEAD that strictly descends from `last_accepted`.
+It records an append-only state-level adoption, advances `last_accepted`, sends no event, and never
+mutates Git. It is not a general synchronization command and cannot run during an active round.
 
-```text
-你是 Reviewer AI。完整閱讀 PROTOCOL、正式規格、最新有效 Engineer JSON，
-以及它指向的完整 Engineer 報告。不能只因檔案存在就檢查；必須確認
-complete 是 boolean true、source 正確、report_path 存在且 SHA-256 相同。
+## 9. Engineering handoff
 
-獨立檢查實際檔案與驗證結果，在審核報告中寫完整 finding、修改指南和下一輪
-checklist，不直接替 Engineer 改產品程式。需要 Owner 決定時停止並保留草稿，
-不發布完成 JSON。全部完成後，發布程式是最後一個動作；成功後立即等待。
+After implementation, self-testing, fixes, and commits, the Engineer runs:
+
+```bash
+relay review
 ```
 
-## 15. 啟動驗收清單
+Relay verifies Git, updates the Checkpoint head, and sends the Checker:
 
-- [ ] Owner 已填完專案設定，沒有未處理 placeholder。
-- [ ] 兩端 AI 已完整閱讀協定與自己的啟動提示詞。
-- [ ] 報告與 signals 目錄已事先建立。
-- [ ] 專案只放兩支發布程式，沒有訊號讀取器或 watcher。
-- [ ] 兩端知道「檔案存在」不等於完成。
-- [ ] 兩端只接受 boolean `complete: true`。
-- [ ] 兩端會依 `report_path` 讀報告並核對 SHA-256。
-- [ ] Engineer 知道每輪直接複製本協定 §7 建立新的工作報告。
-- [ ] Engineer 知道先原樣複製 Reviewer checklist，再寫自己的七欄執行步驟表。
-- [ ] Engineer 知道第零節須在產品改動前凍結，差異只能寫入偏差章節。
-- [ ] 兩端知道正式報告不能修改，只能新增 correction report。
-- [ ] Owner 決策停工與恢復條件已確認。
-- [ ] commit、push、merge、部署與刪除權限已分別寫清楚。
-- [ ] Reviewer 已用 bootstrap 報告只解鎖第一輪。
+```text
+REVIEW CP018 EV0042
+```
 
-任一項未成立時，只能修正協作環境，不開始產品工作。
+**HARD RULE — NO EXPLANATORY COMPLETION REPORT:** after successful `relay review`, the Engineer's
+entire final assistant message is the exact single Relay event line returned by the command. The
+Engineer must not send a prose completion message before or after it, and must not summarize work,
+files, commits, tests, findings, or next steps. A routine handoff containing any additional
+explanatory text violates this protocol even when Relay itself succeeded.
 
-## 16. 專案暫停或取消
+The Engineer ends the turn immediately after that single-line handoff. Routine completion
+summaries and Markdown reports are not produced.
 
-Owner 宣布暫停或取消後，兩端立即停止新工作。保留報告、JSON 與 Git 歷史供後續
-稽核；除非 Owner 明確指定，不自動刪 branch、不 reset、不 push、不 merge。
+## 10. Review and revision
 
-## 17. 版本紀錄
+The Checker first claims the event:
 
-| 版本 | 日期 | 內容 |
+```bash
+relay claim EV0042
+relay show CP018
+```
+
+A new finding:
+
+```bash
+relay finding --location src/auth/token.py:84 \
+  "refresh rotation is not atomic"
+```
+
+If the same underlying issue remains on a later pass, the same Finding ID is reused:
+
+```bash
+relay finding --id F001 --location src/auth/token.py:91 \
+  "replacement creation remains outside the critical section"
+```
+
+A Finding ID identifies one underlying issue. Its current location and description may change. A
+different issue receives a new ID.
+
+Every finding has one live status:
+
+- `open`: the finding still blocks acceptance;
+- `completed`: the Checker verified the repair.
+
+The Engineer cannot modify finding status. `relay review` records revision commits but leaves every
+finding `open`. After verifying one or more repairs, the Checker completes them in one command:
+
+```bash
+relay complete F001 F002
+```
+
+Repeating `relay finding --id F001 ...` keeps or returns that finding to `open`. A finding that is
+still accurate does not need to be rewritten merely to request another revision. `relay revise`
+always sends every finding that remains open.
+
+When the pass requires changes:
+
+```bash
+relay revise
+```
+
+Relay appends the review and sends:
+
+```text
+REVISE CP018 EV0043
+```
+
+The Engineer claims the event, reads the Checkpoint, fixes the current findings, tests, commits,
+and runs `relay review`. Relay records every commit added after the previous reviewed head in one
+revision entry without changing finding status.
+
+## 11. Acceptance
+
+When the current head passes review, the Checker selects one ready round:
+
+```bash
+relay accept --next EXAMPLE-R130A3B2B2
+```
+
+Acceptance is rejected while any finding remains `open`; the Checker must verify and complete each
+one first. This prevents an Engineer handoff from self-certifying its own repair.
+
+Relay accepts the current Checkpoint, updates `last_accepted`, creates the next Checkpoint, and sends
+one event:
+
+```text
+ACCEPT CP018 WORK EXAMPLE-R130A3B2B2 CP019 EV0044
+```
+
+If no round is ready:
+
+```bash
+relay accept --idle
+```
+
+Relay accepts the current Checkpoint and enters `idle` without inventing new work.
+
+`accept` is always the Checker's final workflow action in the turn. With `--next`, the Engineer may
+begin as soon as it receives the event. The Checker therefore completes every required work-plan
+update, phase Gate, and next-round selection before running `accept`; it performs no further work
+after a successful acceptance.
+
+### Phase-gate preflight (when configured)
+
+Phase Gates are Checker actions, not engineering work rounds. Never pass a Gate ID to
+`relay start`, `relay accept --next`, or `relay cancel --next`; Relay rejects that dispatch. The
+work plan must give every Gate an ID containing `GATE` as a dot, underscore, or hyphen-delimited
+token, such as `PHASE-GATE-01`.
+
+After the phase's final engineering head passes its focused review, the Checker marks that work item
+complete and performs the Gate while the Checkpoint remains in `review`; the Engineer continues to
+wait. If the Gate passes, the Checker marks the Gate complete, selects the next ready round, and uses
+`relay accept --next <round>` as the turn's final action. If the project has no ready next round, the
+final action is `relay accept --idle`.
+
+If the Gate invalidates the active round's own acceptance, the Checker returns that item to
+unchecked and uses the normal finding and revision flow. For a separate defect, the Checker adds one
+focused repair item, leaves the Gate unchecked, and selects that repair with the terminal
+`accept --next`; the Gate is run again after the repair passes review. A Gate is never dispatched as
+an engineering round, and the Checker performs no Gate work after `accept`.
+
+Before every configured phase-ending Gate, the Checker must run the read-only work-plan scan:
+
+```bash
+relay scan-work --plan <work-plan.md> --gate <gate-id>
+```
+
+The scan covers only checklist items in the current phase: after the preceding Gate and before the
+named Gate. It excludes the named Gate itself, earlier phases, and future phases. The first phase
+must begin at a level-two Markdown heading (`##`); lower-level headings do not reset its boundary.
+An earlier Gate's checkbox does not become a global blocker; projects that require global closure
+may additionally use `scan-all-work` or a project-defined replacement.
+
+An unchecked item in that range blocks the phase Gate. Prose such as `deferred`, `skipped`, or
+`covered elsewhere` does not waive an unchecked item. The Checker must first resolve and update the
+project plan under its existing rules, or enter an Owner hold when authority is insufficient. Only a
+`WORK_SCAN_PASS` result permits the Checker to continue to that phase's red-team and full-project
+Gate checks.
+
+For a whole-project inventory, the Checker may also run:
+
+```bash
+relay scan-all-work --plan <work-plan.md>
+```
+
+This read-only command lists every unchecked checklist item across all phases, including Gates. It
+does not infer why an item is open and does not authorize a phase Gate; only the phase-scoped
+`scan-work` command can return `WORK_SCAN_PASS`.
+
+Any project-specific progress file remains governed by that project's rules. The Relay state machine
+never rewrites a Markdown work plan; both scan commands only read it.
+
+## 12. Owner decision hold
+
+Uncertainty always stops the workflow. Either role must request an Owner decision for:
+
+- conflicting or ambiguous requirements;
+- multiple reasonable acceptance interpretations;
+- public contract, data model, architecture, dependency, service, cost, or credential decisions;
+- push, merge, deployment, deletion, or another action lacking specific authorization;
+- unexplained worktree or Relay state;
+- a choice that could materially change behavior, scope, quality, or schedule.
+
+The active role runs:
+
+```bash
+relay hold --owner "short reason"
+```
+
+Relay records the previous state and enters `owner_hold`. It assigns no other work. If the Engineer
+raises the hold, Relay notifies the Checker.
+
+**HARD RULE — THE ENGINEER DOES NOT EXPLAIN A HOLD TO THE OWNER:** after a successful
+Engineer-raised hold, the Engineer outputs only the exact `OWNER_HOLD ...` event line. It does not
+send the Owner a reason, options, impact analysis, recommendation, or proposed implementation. The
+hold record is the handoff to the Checker; the Checker alone turns it into an Owner-facing decision
+request. The Engineer cannot resume its own hold.
+
+The Checker asks the Owner with:
+
+1. current work and evidence;
+2. why existing authority is insufficient;
+3. viable options and impact;
+4. the Checker's recommendation;
+5. one exact question.
+
+Only after the Owner decides and explicitly says work may continue does the Checker run:
+
+```bash
+relay resume --decision "owner decision" --to engineer
+```
+
+The decision is appended to the hold record. It grants no unrelated authority.
+
+If the Owner instead cancels a mistakenly assigned round before it has produced any commit or
+review, the Checker may atomically retain that Checkpoint as `cancelled` and select the correct
+next round:
+
+```bash
+relay cancel --decision "owner decision" --next EXAMPLE-R132A2
+```
+
+Use `--idle` when no round is ready. Cancellation is deliberately narrow: the hold must have been
+raised from `engineering`, Git must still equal the accepted base, the worktree must be clean, and
+the Checkpoint must have no review, revision, or finding history. Relay never discards or silently
+accepts product work. The fixed handoff is `CANCEL <old> WORK <round> <new> <event>`.
+
+If a reviewed round has an open finding that cannot be completed until an external dependency is
+available, the Owner may instead approve deferral. The Checker leaves the work-plan item unchecked,
+records the dependency in that item, and runs:
+
+```bash
+relay defer --decision "owner decision" --next EXAMPLE-R214A
+```
+
+Deferral is Checker-only, requires an active Owner hold and at least one open finding, retains the
+reviewed HEAD as the next Checkpoint baseline, and never completes the finding or the work round.
+Any configured phase Gate therefore continues to block until the deferred round is resumed and
+accepted. Its fixed handoff is `DEFER <old> WORK <round> <new> <event>`.
+
+After the dependency becomes available, the Checker first completes the active round and leaves
+Relay idle. With explicit Owner approval, the Checker resumes the original Checkpoint:
+
+```bash
+relay resume-deferred --checkpoint CP018 --decision "dependency is available"
+```
+
+Relay keeps the same Checkpoint and Finding IDs, advances its revision baseline to the current
+accepted HEAD, records the decision, and sends the Engineer
+`RESUME_DEFERRED <checkpoint> WORK <round> <event>`. The normal revision, review, finding-completion,
+and acceptance flow then continues.
+
+The Checker is the only role that explains an active hold to the Owner and the only role authorized
+to run `relay resume`. If the Owner addresses the Engineer while a hold is active, the Engineer does
+not duplicate or replace the Checker's decision analysis.
+
+## 13. Event delivery
+
+Relay resolves Engineer and Checker targets to pane IDs during initialization. It sends only fixed,
+short control messages through the configured transport:
+
+- `tmux_keys` uses a project-specific named tmux buffer followed by the Enter key;
+- `codex_queue` invokes `codex queue --thread <thread> --message <event>` and does not simulate
+  keyboard input.
+
+Arguments are passed directly to `subprocess`; no shell command is constructed. A Codex recipient
+must use `codex_queue`; `tmux_keys` is not considered a reliable Codex activation path.
+
+Every delivery has an Event ID. The receiver must claim it before acting:
+
+```bash
+relay claim EV0042
+```
+
+Duplicate claims are harmless. A failed send remains in `pending_delivery`, which already blocks
+every other state transition. After the Owner repairs the configured target or session, the original
+sender runs:
+
+```bash
+relay retry
+```
+
+Relay does not create an Owner hold while a delivery is pending. The necessary delivery error may be
+reported to the Owner; an unexplained mismatch is inspected with `relay status`, then retried or
+claimed using the recorded Event ID. Finding text, source content, and Owner decisions are never
+placed in transport messages.
+
+## 14. Atomic state without locks
+
+Relay uses no watcher, daemon, server, polling process, or lock file. The protocol permits only one
+state-changing command after the active role finishes its work. Concurrent invocation is explicitly
+unsupported.
+
+Each JSON file is written to a temporary file in the same directory, flushed, and atomically moved
+into place with `os.replace`. A transition that changes both Checkpoints and `state.json` first writes
+a replayable `.relay/transition.json` intent. Every later command that reads Relay state completes
+that intent first. If interruption happens after an event is delivered but before delivery state is
+saved, retrying may deliver the same Event ID again; duplicate claims remain harmless.
+
+The intent journal protects sequential commands from interrupted writes. It is not a lock and does
+not make concurrent invocation safe. Supporting multiple processes or remote agents would require a
+new concurrency-control design.
+
+## 15. Commands
+
+From the project root, the entry point is:
+
+```bash
+python3 docs/ai-collaboration/tools/relay.py
+```
+
+The documentation uses `relay` as shorthand for that command.
+
+```text
+relay init
+relay start --round <work-round>
+relay claim <event-id>
+relay review
+relay finding [--id <finding-id>] --location <path[:line]> <problem>
+relay complete <finding-id> [<finding-id> ...]
+relay revise
+relay accept (--next <work-round> | --idle)
+relay hold --owner <reason>
+relay cancel --decision <owner-decision> (--next <work-round> | --idle)
+relay defer --decision <owner-decision> --next <work-round>
+relay resume --decision <decision> --to <engineer|checker>
+relay resume-deferred --checkpoint <checkpoint-id> --decision <owner-decision>
+relay adopt-idle-head --decision <owner-decision>
+relay retry
+relay show [checkpoint-id]
+relay status
+relay scan-work --plan <work-plan.md> --gate <gate-id>
+relay scan-all-work --plan <work-plan.md>
+```
+
+Read-only `show`, `status`, `scan-work`, and `scan-all-work` do not change turn ownership. Other
+commands enforce the current tmux pane role and reject an unclaimed incoming event.
+
+## 16. Silent handoff and owner reports
+
+Normal agent-to-agent turns end with a Relay command. No routine prose handoff report is written or
+printed. Git and the Checkpoint contain the durable details.
+
+**HARD RULE — NO EXPLANATORY HANDOFF REPORT:** for `review`, `revise`, `accept`, and an
+Engineer-raised `hold`, the role that
+just completed its work must output only the exact Relay event line. It must not add acknowledgments,
+headings, explanations, summaries, test results, file lists, commit details, status prose, or next
+steps anywhere in the completion handoff. It also must not send a prose "work completed" message
+immediately before running Relay. Relay success is the completion notice.
+
+After a successful routine handoff, the final assistant message must contain exactly the single
+Relay event line returned by the command and nothing else. It must not summarize scope, files,
+commits, tests, findings, or next steps. This rule applies even when the host normally expects a
+final response. An Owner message that asks a question or requires a decision remains an explicit
+exception and receives a concise answer.
+
+Agent-authored Checkpoint text is concise English written directly for agent use. Dynamic product
+or user content is never translated or rewritten. Owner-facing conversation may use the Owner's
+preferred language; any decision summary stored in Relay is written as concise English.
+
+The Checker provides a concise human-readable report when the Owner requests progress or must make a
+decision. A larger report may be created at a major milestone. It does not duplicate complete diffs
+or routine test output.
+
+Necessary errors and blockers may be printed when Git, tmux, Relay, or a required test fails.
+
+## 17. Initialization and activation checks
+
+Before activation:
+
+- [ ] The Owner completes `PROJECT_PROFILE.md` without placeholders.
+- [ ] Relay unit and adversarial tests pass.
+- [ ] A temporary Git repository dry run covers start, review, revise, repeat finding, accept, idle,
+      hold, resume, deferral recovery, interrupted-write replay, failed delivery, retry, and duplicate
+      claim.
+- [ ] Engineer and Checker pane IDs resolve correctly in a disposable real-tmux smoke test.
+- [ ] `.relay/`, the real `relay.toml`, and any active local Markdown work plan are ignored by Git.
+- [ ] Git guards reject dirty, detached, divergent, merged, and changed-during-review states.
+- [ ] The Owner fills both real tmux targets, transports, and any Codex thread in `relay.toml`;
+      Relay validates them without guessing.
+- [ ] The Owner reviews the dry-run result and explicitly activates Relay for the project.
+
+After activation:
+
+- no new routine reports or completion signals are published;
+- no watcher is started;
+- the first real work round begins only through `relay start`.
+
+## 18. Version history
+
+| Version | Date | Change |
 |---|---|---|
-| 2.0.2 | 2026-08-04 | 將 Engineer 工作報告範本完整內嵌於本協定 §7，不再維護獨立範本檔。 |
-| 2.0.1 | 2026-08-04 | 依既有成熟工作報告恢復執行前七欄步驟表、決策點、風險退路、明確不做與八節證據格式。 |
-| 2.0.0 | 2026-08-04 | 精簡為兩支只負責發布 JSON 的程式；移除訊號讀取、watcher、Git 狀態機與自動授權。 |
+| 3.1.0 | 2026-09-03 | Extracts Relay into a project-agnostic standard, adds project and work-plan templates plus whole-plan unfinished-work inventory, defines alternative-planner compatibility, adds deferred-work resumption and interrupted-transition replay, and removes legacy report publishers from the distributable package. |
+| 3.0.9 candidate | 2026-08-31 | Adds an Owner-authorized, Checker-only deferral path for reviewed work blocked by an unavailable dependency; partial commits remain while findings and plan items stay open. |
+| 3.0.8 candidate | 2026-08-30 | Adds a narrow, audited Checker recovery for an Owner-approved descendant HEAD while Relay is idle between rounds. |
+| 3.0.6 candidate | 2026-08-25 | Adds a mandatory phase-scoped unfinished-work scan before every configured phase Gate. |
+| 3.0.5 candidate | 2026-08-25 | Adds Checker-owned `open`/`completed` finding status and bulk `relay complete`; Engineer review handoffs cannot alter status, and acceptance rejects any open finding. |
+| 3.0.4 candidate | 2026-08-25 | Adds an Owner-authorized, Checker-only cancellation path for a mistaken untouched assignment; it preserves the cancelled Checkpoint and never discards committed or reviewed work. |
+| 3.0.3 candidate | 2026-08-24 | Makes Owner-hold authority one-way: the Engineer emits only the hold event; the Checker alone explains options and recommendations to the Owner and alone resumes the Checkpoint. |
+| 3.0.2 candidate | 2026-08-24 | Makes the ban on explanatory completion reports a hard rule: routine review, revise, and accept handoffs contain only the exact Relay event line, with no prose completion message before or after it. |
+| 3.0.1 candidate | 2026-08-23 | Adds explicit per-agent transports, uses the Codex session queue instead of simulated Enter for Codex activation, and makes the single-line final response mandatory. |
+| 3.0.0 candidate | 2026-08-23 | Replaces report/signal polling with local tmux Relay, Owner-written TOML agent mapping, one Checkpoint per round, Git guards, silent handoff, Event claim/retry, and mandatory Owner hold. |
+| 2.2.5 | 2026-08-17 | Last report-and-signal protocol. Retained only as legacy history during transition. |

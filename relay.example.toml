@@ -1,0 +1,17 @@
+schema_version = "relay-config/v2"
+branch = "feature/shared-work"
+
+# Resolve targets before activation:
+# tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pane_current_command}'
+#
+# Use transport = "tmux_keys" for a terminal application that reliably accepts a pasted event
+# followed by Enter. For Codex, first confirm that the installed CLI supports `codex queue --help`,
+# then use transport = "codex_queue" and add its session UUID or exact session name as `thread`.
+
+[agents.engineer]
+target = "project:0.0"
+transport = "tmux_keys"
+
+[agents.checker]
+target = "project:0.1"
+transport = "tmux_keys"
